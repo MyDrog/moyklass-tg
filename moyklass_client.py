@@ -5,7 +5,7 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
-BASE_URL = "https://api.moyklass.com/v1"
+BASE_URL = "https://moyklass-proxy.16021998meh.workers.dev"
 API_KEY = os.getenv("MOYKLASS_API_KEY")
 
 _token_cache = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJhcGlLZXlJZCI6MTUzMiwic2Vzc2lvbklkIjoiOThiZjg3YmUtNWE3OS00ZWY0LThlYzMtMDJjYjE1ZDBiMmRmIiwiZXhwaXJlc0F0IjoiMjAyNS0xMi0zMFQyMjo1NjoyNCswMDowMCIsInpvbmVJZCI6MSwiY29tcGFueUlkIjo3MTMzLCJpYXQiOjE3NjY1MzA1ODQsImV4cCI6MTc2NzEzNTM4NH0.gcX86PqBPmmVSibRhf4n3TLMIzHZSVNPSfmMMlr8o2o"
@@ -34,8 +34,6 @@ def _get_new_token():
 def _get_token():
     global _token_cache, _token_expiry
     now = datetime.now(timezone.utc)
-    print(_token_cache)
-    print(now)
     if not _token_cache or now >= _token_expiry - timedelta(minutes=5):
         return _get_new_token()
     return _token_cache
@@ -91,9 +89,23 @@ def get_lesson(lesson_id: int):
         raise
 
 
-def get_subscription(subscription_id: int):
+def get_class(class_id: int):
+    """Получить информацию о группе по classId"""
     try:
-        return get(f"/company/subscriptions/{subscription_id}")
+        return get(f"/company/classes/{class_id}")
     except Exception as e:
-        print(f"[ERROR] Не удалось получить данные абонемента {subscription_id}: {e}")
+        print(f"[ERROR] Не удалось получить данные группы {class_id}: {e}")
+        raise
+
+
+def get_course(course_id: int):
+    """Получить информацию о курсе по courseId"""
+    try:
+        # API возвращает список, берем первый элемент
+        data = get(f"/company/courses/?courseId={course_id}")
+        if isinstance(data, list) and data:
+            return data[0]
+        return {}
+    except Exception as e:
+        print(f"[ERROR] Не удалось получить данные курса {course_id}: {e}")
         raise
