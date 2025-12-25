@@ -13,26 +13,29 @@ async def startup_event():
         phone = getenv("TG_PHONE_NUMBER")
         await client.start(phone=phone)
 
+
+
+
 @app.post("/webhook/moyklass")
 async def moyklass_webhook(request: Request):
     data = await request.json()
     print("Received webhook:", data)
+
     try:
         message_obj = process_webhook(data)
-        if message_obj:
-            text = message_obj.get("text")
-            phone = message_obj.get("phone")
 
-            print("Webhook message:", text, "Phone:", phone)
+        if not message_obj:
+            return {"status": "ok"}
 
-            # Отправка в Telegram админу
-            admin_phone = getenv("TG_PHONE_NUMBER")
-            if text and admin_phone:
-                await send_message_by_phone(admin_phone, text)
+        text = message_obj.get("text")
+        phone = message_obj.get("phone")
 
-            # Можно также отправлять на телефон ученика, если нужно:
-            # if text and phone:
-            #     await send_message_by_phone(phone, text)
+        print("Webhook message:", text, "Phone:", phone)
+
+        if text and phone:
+            await send_message_by_phone(phone, text)
+        else:
+            print("Skip sending: text or phone is missing")
 
     except Exception as e:
         print("Webhook error:", e)

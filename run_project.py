@@ -7,9 +7,10 @@ PROJECT_DIR = os.path.dirname(os.path.abspath(__file__))
 VENV_DIR = os.path.join(PROJECT_DIR, "venv")
 REQUIREMENTS_FILE = os.path.join(PROJECT_DIR, "requirements.txt")
 ENV_FILE = os.path.join(PROJECT_DIR, ".env")
+SCREEN_NAME = "moyklass-webhook"
 
 def run(cmd, shell=False):
-    print(f"Running: {' '.join(cmd) if isinstance(cmd, list) else cmd}")
+    print(f"Running: {cmd}")
     subprocess.check_call(cmd, shell=shell)
 
 def create_venv():
@@ -21,26 +22,40 @@ def create_venv():
 
 def install_requirements():
     print("Устанавливаем зависимости...")
-    if platform.system() == "Windows":
-        pip_path = os.path.join(VENV_DIR, "Scripts", "pip.exe")
-    else:
-        pip_path = os.path.join(VENV_DIR, "bin", "pip")
+    pip_path = os.path.join(
+        VENV_DIR,
+        "Scripts" if platform.system() == "Windows" else "bin",
+        "pip"
+    )
     run([pip_path, "install", "-r", REQUIREMENTS_FILE])
 
-def activate_and_run_uvicorn():
-    # Подгрузка .env перед запуском uvicorn
-    python_executable = os.path.join(VENV_DIR, "Scripts" if platform.system() == "Windows" else "bin", "python")
+def run_uvicorn_in_screen():
+    if platform.system() == "Windows":
+        print("Screen не поддерживается на Windows.")
+        return
+
+    python_exec = os.path.join(VENV_DIR, "bin", "python")
+
+    uvicorn_cmd = (
+        f"cd {PROJECT_DIR} && "
+        f"{python_exec} -c "
+        f"\"from dotenv import load_dotenv; "
+        f"load_dotenv(r'{ENV_FILE}'); "
+        f"import uvicorn; "
+        f"uvicorn.run('app:app', host='0.0.0.0', port=8000)\""
+    )
+
+    # screen -dmS <name> bash -c "<command>"
     cmd = [
-        python_executable,
+        "screen",
+        "-dmS",
+        SCREEN_NAME,
+        "bash",
         "-c",
-        (
-            "from dotenv import load_dotenv; "
-            f"load_dotenv(r'{ENV_FILE}'); "
-            "import uvicorn; "
-            "uvicorn.run('app:app', host='0.0.0.0', port=8000)"
-        )
+        uvicorn_cmd
     ]
-    print("Запуск uvicorn с подгрузкой .env...")
+
+    print(f"Запуск uvicorn в screen-сессии '{SCREEN_NAME}'...")
     run(cmd)
 
 def main():
@@ -48,11 +63,14 @@ def main():
     install_requirements()
 
     if not os.path.exists(ENV_FILE):
-        print("Файл .env не найден, создайте его с нужными переменными.")
-    else:
-        print(".env найден, переменные будут подгружены автоматически.")
+        print("❌ Файл .env не найден")
+        return
 
-    activate_and_run_uvicorn()
+    run_uvicorn_in_screen()
+
+    print("\n✅ Сервер запущен в screen")
+    print(f"Подключиться: screen -r {SCREEN_NAME}")
+    print(f"Список screen: screen -ls")
 
 if __name__ == "__main__":
     main()
