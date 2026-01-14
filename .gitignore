@@ -9,5 +9,3 @@ test1.py
 tg_entity_cache.json
 monitor.py
 webhook.log
-run_project.py
-stop_project.py
