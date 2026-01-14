@@ -27,7 +27,6 @@ def _get_new_token():
         _token_expiry = datetime.fromisoformat(data["expiresAt"])
         return _token_cache
     except requests.exceptions.RequestException as e:
-        print(f"[ERROR] Не удалось получить новый токен: {e}")
         raise
 
 
@@ -48,44 +47,33 @@ def get(path: str):
         }
         r = requests.get(f"{BASE_URL}{path}", headers=headers, timeout=10)
         if r.status_code == 401:
-            # токен устарел, пробуем обновить
             token = _get_new_token()
             headers["x-access-token"] = token
             r = requests.get(f"{BASE_URL}{path}", headers=headers, timeout=10)
         r.raise_for_status()
         return r.json()
-    except requests.exceptions.Timeout:
-        print(f"[ERROR] Таймаут запроса GET {path}")
-        raise
-    except requests.exceptions.HTTPError as e:
-        print(f"[ERROR] HTTP ошибка при GET {path}: {r.status_code} {r.text}")
-        raise
-    except requests.exceptions.RequestException as e:
-        print(f"[ERROR] Ошибка запроса GET {path}: {e}")
+    except requests.exceptions.RequestException:
         raise
 
 
 def get_user(user_id: int):
     try:
         return get(f"/company/users/{user_id}")
-    except Exception as e:
-        print(f"[ERROR] Не удалось получить данные пользователя {user_id}: {e}")
+    except Exception:
         raise
 
 
 def get_payment(payment_id: int):
     try:
         return get(f"/company/payments/{payment_id}")
-    except Exception as e:
-        print(f"[ERROR] Не удалось получить данные платежа {payment_id}: {e}")
+    except Exception:
         raise
 
 
 def get_lesson(lesson_id: int):
     try:
         return get(f"/company/lessons/{lesson_id}")
-    except Exception as e:
-        print(f"[ERROR] Не удалось получить данные урока {lesson_id}: {e}")
+    except Exception:
         raise
 
 
@@ -93,19 +81,16 @@ def get_class(class_id: int):
     """Получить информацию о группе по classId"""
     try:
         return get(f"/company/classes/{class_id}")
-    except Exception as e:
-        print(f"[ERROR] Не удалось получить данные группы {class_id}: {e}")
+    except Exception:
         raise
 
 
 def get_course(course_id: int):
     """Получить информацию о курсе по courseId"""
     try:
-        # API возвращает список, берем первый элемент
         data = get(f"/company/courses/?courseId={course_id}")
         if isinstance(data, list) and data:
             return data[0]
         return {}
-    except Exception as e:
-        print(f"[ERROR] Не удалось получить данные курса {course_id}: {e}")
+    except Exception:
         raise

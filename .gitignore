@@ -4,3 +4,10 @@ __pycache__/
 *.pyc
 *.log
 admin_session.session
+test.py
+test1.py
+tg_entity_cache.json
+monitor.py
+webhook.log
+run_project.py
+stop_project.py

@@ -38,9 +38,8 @@ def handle_lesson_debt(webhook: dict) -> dict:
     course_name = f"{course_info.get('name', '')} {class_name}"
 
     text = templates.LESSON_DEBT.format(
-        user_name=user["name"],
-        course_name=course_name,
-        lesson_date_time=lesson_date_time
+        course=course_name,
+        lesson_date=lesson_date_time
     )
 
     return {
