@@ -5,10 +5,6 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
-BASE_URL = "https://moyklass-proxy.16021998meh.workers.dev"
-API_KEY = os.getenv("MOYKLASS_API_KEY")
-
-_token_cache = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJhcGlLZXlJZCI6MTUzMiwic2Vzc2lvbklkIjoiOThiZjg3YmUtNWE3OS00ZWY0LThlYzMtMDJjYjE1ZDBiMmRmIiwiZXhwaXJlc0F0IjoiMjAyNS0xMi0zMFQyMjo1NjoyNCswMDowMCIsInpvbmVJZCI6MSwiY29tcGFueUlkIjo3MTMzLCJpYXQiOjE3NjY1MzA1ODQsImV4cCI6MTc2NzEzNTM4NH0.gcX86PqBPmmVSibRhf4n3TLMIzHZSVNPSfmMMlr8o2o"
 _token_expiry = datetime(2025, 12, 26, 0, 0, 0, tzinfo=timezone.utc)
 
 
