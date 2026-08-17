@@ -55,6 +55,14 @@ def process_webhook(webhook: dict) -> dict | None:
     if not obj:
         return None
 
+    user = get_user(obj["userId"])
+
+    # Проверка атрибута "unsubscribe_automailing"
+    attributes = user.get("attributes", [])
+    for attr in attributes:
+        if attr.get("attributeAlias") == "unsubscribe_automailing" and attr.get("value") == "true":
+            return None
+
     if event == "payment_new":
         return handle_payment_new(webhook)
     elif event == "sub_lesson_in_debt":

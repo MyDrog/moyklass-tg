@@ -33,35 +33,51 @@ def save_cache(cache: dict):
 def normalize_phone(phone: str) -> str:
     return "".join(filter(str.isdigit, phone))
 
-# ---------- main logic ----------
-
-async def get_entity_from_cache(phone: str):
-    """Пытаемся взять entity из кэша"""
+def remove_from_cache(phone: str):
     phone = normalize_phone(phone)
     cache = load_cache()
     if phone in cache:
-        data = cache[phone]
-        return InputPeerUser(user_id=data["user_id"], access_hash=data["access_hash"])
-    return None
+        del cache[phone]
+        save_cache(cache)
+
+# ---------- entity sources ----------
+
+async def get_entity_from_cache(phone: str):
+    phone = normalize_phone(phone)
+    cache = load_cache()
+    data = cache.get(phone)
+    if not data:
+        return None
+    return InputPeerUser(
+        user_id=data["user_id"],
+        access_hash=data["access_hash"]
+    )
 
 async def get_entity_from_dialogs(phone: str):
-    """Ищем entity по существующим диалогам (не трогаем историю)"""
     phone = normalize_phone(phone)
-    dialogs = await client.get_dialogs()
-    for d in dialogs:
-        if hasattr(d.entity, "phone") and normalize_phone(d.entity.phone) == phone:
-            entity = d.entity
-            # Обновляем кэш
+    async for dialog in client.iter_dialogs():
+        entity = dialog.entity
+        if hasattr(entity, "phone") and normalize_phone(entity.phone) == phone:
             cache = load_cache()
-            cache[phone] = {"user_id": entity.user_id, "access_hash": entity.access_hash}
+            cache[phone] = {
+                "user_id": entity.id,
+                "access_hash": entity.access_hash
+            }
             save_cache(cache)
-            return InputPeerUser(user_id=entity.user_id, access_hash=entity.access_hash)
+            return InputPeerUser(
+                user_id=entity.id,
+                access_hash=entity.access_hash
+            )
     return None
 
 async def import_contact(phone: str):
-    """Импорт контакта только как последняя мера"""
     phone = normalize_phone(phone)
-    contact = InputPhoneContact(client_id=0, phone=phone, first_name="User", last_name="")
+    contact = InputPhoneContact(
+        client_id=0,
+        phone=phone,
+        first_name="User",
+        last_name=""
+    )
     try:
         result = await client(ImportContactsRequest([contact]))
     except RPCError:
@@ -72,55 +88,59 @@ async def import_contact(phone: str):
 
     user = result.users[0]
     cache = load_cache()
-    cache[phone] = {"user_id": user.id, "access_hash": user.access_hash}
+    cache[phone] = {
+        "user_id": user.id,
+        "access_hash": user.access_hash
+    }
     save_cache(cache)
-    return InputPeerUser(user_id=user.id, access_hash=user.access_hash)
+
+    return InputPeerUser(
+        user_id=user.id,
+        access_hash=user.access_hash
+    )
+
+# ---------- sending ----------
+
+async def safe_send(entity, phone: str, message: str) -> bool:
+    """
+    Безопасная отправка.
+    True  — сообщение отправлено
+    False — entity невалиден
+    """
+    if entity is None:
+        return False
+
+    try:
+        await client.send_message(entity, message)
+        return True
+
+    except PeerIdInvalidError:
+        remove_from_cache(phone)
+        return False
+
+    except RPCError:
+        return False
 
 async def send_message_by_phone(phone: str, message: str):
     await client.start(phone=PHONE_NUMBER)
 
-    # 1. Пробуем кэш
+    # 1. cache
     entity = await get_entity_from_cache(phone)
+    if await safe_send(entity, phone, message):
+        return
 
-    # 2. Пробуем отправить сообщение
-    if entity:
-        try:
-            await client.send_message(entity, message)
-            return
-        except PeerIdInvalidError:
-            # если не получилось, удаляем из кэша
-            cache = load_cache()
-            if phone in cache:
-                del cache[phone]
-                save_cache(cache)
-        except RPCError:
-            entity = None
+    # 2. dialogs
+    entity = await get_entity_from_dialogs(phone)
+    if await safe_send(entity, phone, message):
+        return
 
-    # 3. Пробуем найти диалог
-    if not entity:
-        entity = await get_entity_from_dialogs(phone)
-        if entity:
-            try:
-                await client.send_message(entity, message)
-                return
-            except PeerIdInvalidError:
-                cache = load_cache()
-                if phone in cache:
-                    del cache[phone]
-                    save_cache(cache)
-            except RPCError:
-                entity = None
-
-    # 4. Последняя мера — импорт контакта
-    if not entity:
-        entity = await import_contact(phone)
-        if entity:
-            try:
-                await client.send_message(entity, message)
-            except RPCError:
-                return
+    # 3. import (последний шанс)
+    entity = await import_contact(phone)
+    await safe_send(entity, phone, message)
 
 # ---------- test ----------
 
 if __name__ == "__main__":
-    asyncio.run(send_message_by_phone("79620051056", "Тестовое сообщение"))
+    asyncio.run(
+        send_message_by_phone("79620051056", "Тестовое сообщение")
+    )
