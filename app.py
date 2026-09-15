@@ -4,141 +4,531 @@ import json
 import uuid
 import time
 import logging
-from datetime import datetime
 from logging.handlers import RotatingFileHandler
+
 from fastapi import FastAPI, Request
+
 from webhook_handler import process_webhook
-from tg_sender import client, send_message_by_phone  # Telethon client и функция
+from tg_sender import client, send_message_by_phone
+from max_sender import max_client, send_max_message
 
-# Настройка логирования
+
+# ============================================================
+# LOGGING
+# ============================================================
+
 log_formatter = logging.Formatter(
-    '%(asctime)s - %(levelname)s - [%(request_id)s] - %(message)s',
-    datefmt='%Y-%m-%d %H:%M:%S'
+    "%(asctime)s - %(levelname)s - %(message)s"
 )
 
-# Файловый обработчик с ротацией (10 MB, 5 бэкапов)
+logger = logging.getLogger("moyklass")
+logger.setLevel(logging.INFO)
+
 file_handler = RotatingFileHandler(
-    'webhook.log', 
-    maxBytes=10*1024*1024,  # 10 MB
+    "webhook.log",
+    maxBytes=10 * 1024 * 1024,
     backupCount=5,
-    encoding='utf-8'
+    encoding="utf-8",
 )
-file_handler.setFormatter(log_formatter)
 
-# Консольный обработчик для отладки
+file_handler.setFormatter(log_formatter)
+logger.addHandler(file_handler)
+
 console_handler = logging.StreamHandler()
 console_handler.setFormatter(log_formatter)
-
-logger = logging.getLogger(__name__)
-logger.setLevel(logging.INFO)
-logger.addHandler(file_handler)
 logger.addHandler(console_handler)
+
+
+# ============================================================
+# APP
+# ============================================================
 
 app = FastAPI()
 
-# Очередь сообщений
+
+# ============================================================
+# QUEUES
+# ============================================================
+
+webhook_queue = asyncio.Queue()
 message_queue = asyncio.Queue()
 
-# Интервал между отправками
-SEND_INTERVAL = 3  # секунды
+
+# ============================================================
+# SETTINGS
+# ============================================================
+
+SEND_INTERVAL = 3
+MAX_MONITOR_INTERVAL = 10
+
+
+# ============================================================
+# MAX CONNECTION
+# ============================================================
+
+async def start_max_client():
+    logger.info("Запуск MAX-клиента...")
+
+    max_task = asyncio.create_task(max_client.start())
+
+    for _ in range(100):
+        if max_client._app.started:
+            logger.info("MAX подключен")
+            return max_task
+
+        if max_task.done():
+            try:
+                await max_task
+            except Exception as e:
+                logger.error(f"Ошибка запуска MAX: {e}")
+            return None
+
+        await asyncio.sleep(0.1)
+
+    logger.error("MAX не подключился за 10 секунд")
+
+    if not max_task.done():
+        max_task.cancel()
+
+    return None
+
+
+async def restart_max_client():
+    logger.warning("Перезапуск MAX-клиента...")
+
+    try:
+        await max_client.stop()
+    except Exception as e:
+        logger.warning(f"Ошибка при остановке MAX: {e}")
+
+    max_task = getattr(app.state, "max_task", None)
+
+    if max_task is not None and not max_task.done():
+        max_task.cancel()
+
+        try:
+            await max_task
+        except asyncio.CancelledError:
+            pass
+        except Exception as e:
+            logger.warning(f"Ошибка завершения старого MAX task: {e}")
+
+    app.state.max_task = None
+
+    await asyncio.sleep(2)
+
+    while True:
+        logger.info("Попытка повторного подключения MAX...")
+
+        new_task = await start_max_client()
+
+        if new_task is not None:
+            app.state.max_task = new_task
+            logger.info("MAX успешно переподключен")
+            return
+
+        logger.error("Не удалось подключить MAX. Повтор через 5 секунд")
+        await asyncio.sleep(5)
+
+
+async def max_monitor():
+    logger.info("Монитор MAX запущен")
+
+    while True:
+        try:
+            await asyncio.sleep(MAX_MONITOR_INTERVAL)
+
+            if not max_client._app.started:
+                logger.warning("MAX отключен. Запускаем восстановление соединения")
+
+                await restart_max_client()
+
+        except asyncio.CancelledError:
+            logger.info("Монитор MAX остановлен")
+            raise
+
+        except Exception as e:
+            logger.error(f"Ошибка монитора MAX: {e}")
+            await asyncio.sleep(5)
+
+
+# ============================================================
+# MESSAGE WORKER
+# ============================================================
+
+async def message_sender_worker():
+    logger.info("Worker отправки сообщений запущен")
+
+    while True:
+        phone, text, attempts = await message_queue.get()
+
+        try:
+            current_attempt = attempts + 1
+
+            logger.info(
+                f"Отправка сообщения для {phone}: "
+                f"попытка {current_attempt}/3"
+            )
+
+            max_result = False
+            tg_result = False
+
+            # =========================
+            # MAX
+            # =========================
+            try:
+                if not max_client._app.started:
+                    logger.warning(
+                        f"MAX не запущен перед отправкой для {phone}. "
+                        f"Перезапускаем"
+                    )
+                    await restart_max_client()
+
+                max_result = await send_max_message(phone, text)
+
+                if max_result:
+                    logger.info(
+                        f"MAX: сообщение отправлено для {phone}, "
+                        f"попытка {current_attempt}/3"
+                    )
+                else:
+                    logger.warning(
+                        f"MAX: сообщение не отправлено для {phone}, "
+                        f"попытка {current_attempt}/3"
+                    )
+
+            except Exception as e:
+                logger.error(
+                    f"MAX: ошибка отправки для {phone}, "
+                    f"попытка {current_attempt}/3: {e}"
+                )
+
+            # =========================
+            # Telegram
+            # =========================
+            try:
+                tg_result_raw = await send_message_by_phone(phone, text)
+
+                # Telegram возвращает None при успехе
+                tg_result = tg_result_raw is None or tg_result_raw is True
+
+                if tg_result:
+                    logger.info(
+                        f"Telegram: сообщение отправлено для {phone}, "
+                        f"попытка {current_attempt}/3"
+                    )
+                else:
+                    logger.warning(
+                        f"Telegram: сообщение не отправлено для {phone}, "
+                        f"попытка {current_attempt}/3"
+                    )
+
+            except Exception as e:
+                logger.error(
+                    f"Telegram: ошибка отправки для {phone}, "
+                    f"попытка {current_attempt}/3: {e}"
+                )
+
+            # =========================
+            # Результат попытки
+            # =========================
+            if max_result or tg_result:
+                logger.info(
+                    f"Отправка завершена для {phone}: "
+                    f"Telegram={tg_result_raw}, MAX={max_result}"
+                )
+
+            elif current_attempt < 3:
+                await message_queue.put(
+                    (phone, text, current_attempt)
+                )
+
+                logger.info(
+                    f"Сообщение для {phone} возвращено в очередь. "
+                    f"Следующая попытка: {current_attempt + 1}/3"
+                )
+
+            else:
+                logger.error(
+                    f"Сообщение для {phone} не отправлено ни в один "
+                    f"мессенджер после 3 попыток: "
+                    f"Telegram={tg_result_raw}, MAX={max_result}"
+                )
+
+        except Exception as e:
+            logger.exception(
+                f"Критическая ошибка обработки сообщения "
+                f"для {phone}: {e}"
+            )
+
+        finally:
+            message_queue.task_done()
+
+        await asyncio.sleep(SEND_INTERVAL)
+
+# ============================================================
+# WEBHOOK WORKER
+# ============================================================
+
+async def webhook_worker():
+    logger.info("Worker обработки webhook запущен")
+
+    while True:
+        webhook_id, payload = await webhook_queue.get()
+
+        start_time = time.time()
+
+        try:
+            logger.info(
+                f"[{webhook_id}] - Начата обработка вебхука"
+            )
+
+            result = await asyncio.to_thread(
+                process_webhook,
+                payload
+            )
+
+            elapsed = time.time() - start_time
+
+            logger.info(
+                f"[{webhook_id}] - process_webhook завершён за "
+                f"{elapsed:.2f}с"
+            )
+
+            if result is None:
+                logger.warning(
+                    f"[{webhook_id}] - process_webhook вернул None"
+                )
+
+            else:
+                phone = result.get("phone")
+                text = result.get("text")
+
+                if phone and text:
+                    await message_queue.put(
+                        (phone, text, 0)
+                    )
+
+                    logger.info(
+                        f"[{webhook_id}] - Сообщение добавлено в очередь "
+                        f"отправки для {phone}"
+                    )
+
+                else:
+                    logger.warning(
+                        f"[{webhook_id}] - Некорректный результат "
+                        f"process_webhook: {result}"
+                    )
+
+        except Exception as e:
+            logger.exception(
+                f"[{webhook_id}] - Ошибка обработки webhook: {e}"
+            )
+
+        finally:
+            webhook_queue.task_done()
+
+
+# ============================================================
+# STARTUP
+# ============================================================
 
 @app.on_event("startup")
 async def startup_event():
-    # Запускаем клиент Telegram при старте приложения
-    await client.connect()
-    if not await client.is_user_authorized():
-        phone = os.getenv("TG_PHONE_NUMBER")
-        await client.start(phone=phone)
-    
-    # Запускаем воркер для очереди сообщений
-    asyncio.create_task(message_sender_worker())
+    logger.info("Запуск приложения")
 
-# Воркер для очереди сообщений
-async def message_sender_worker():
-    while True:
-        phone, text = await message_queue.get()
-        request_id = str(uuid.uuid4())[:8]
-        log_context = {"request_id": f"send_{request_id}"}
-        
-        try:
-            start_time = time.time()
-            await send_message_by_phone(phone, text)
-            duration = time.time() - start_time
-            
+    # --------------------------------------------------------
+    # TELEGRAM
+    # --------------------------------------------------------
+
+    try:
+        await client.connect()
+
+        if not await client.is_user_authorized():
+            logger.warning(
+                "Telegram пользователь не авторизован"
+            )
+        else:
             logger.info(
-                f"отправлено сообщение для {phone}: {text[:50]}... | время: {duration:.2f}с",
-                extra=log_context
+                "Telegram подключен"
             )
+
+    except Exception as e:
+        logger.exception(
+            f"Ошибка подключения Telegram: {e}"
+        )
+
+    # --------------------------------------------------------
+    # MAX
+    # --------------------------------------------------------
+
+    app.state.max_task = await start_max_client()
+
+    app.state.max_monitor = asyncio.create_task(
+        max_monitor()
+    )
+
+    # --------------------------------------------------------
+    # WORKERS
+    # --------------------------------------------------------
+
+    app.state.webhook_worker = asyncio.create_task(
+        webhook_worker()
+    )
+
+    app.state.message_worker = asyncio.create_task(
+        message_sender_worker()
+    )
+
+    logger.info("Приложение запущено")
+
+
+# ============================================================
+# SHUTDOWN
+# ============================================================
+
+@app.on_event("shutdown")
+async def shutdown_event():
+    logger.info("Остановка приложения")
+
+    # --------------------------------------------------------
+    # MAX MONITOR
+    # --------------------------------------------------------
+
+    max_monitor_task = getattr(
+        app.state,
+        "max_monitor",
+        None
+    )
+
+    if max_monitor_task is not None:
+        max_monitor_task.cancel()
+
+        try:
+            await max_monitor_task
+        except asyncio.CancelledError:
+            pass
+
+    # --------------------------------------------------------
+    # WORKERS
+    # --------------------------------------------------------
+
+    for name in (
+        "webhook_worker",
+        "message_worker",
+    ):
+        task = getattr(app.state, name, None)
+
+        if task is not None:
+            task.cancel()
+
+            try:
+                await task
+            except asyncio.CancelledError:
+                pass
+
+    # --------------------------------------------------------
+    # TELEGRAM
+    # --------------------------------------------------------
+
+    try:
+        await client.disconnect()
+    except Exception as e:
+        logger.warning(
+            f"Ошибка отключения Telegram: {e}"
+        )
+
+    # --------------------------------------------------------
+    # MAX
+    # --------------------------------------------------------
+
+    try:
+        await max_client.stop()
+    except Exception as e:
+        logger.warning(
+            f"Ошибка остановки MAX: {e}"
+        )
+
+    max_task = getattr(
+        app.state,
+        "max_task",
+        None
+    )
+
+    if max_task is not None and not max_task.done():
+        max_task.cancel()
+
+        try:
+            await max_task
+        except asyncio.CancelledError:
+            pass
         except Exception as e:
-            logger.error(
-                f"ошибка при отправке для {phone}: {e}", 
-                extra=log_context,
-                exc_info=True
+            logger.warning(
+                f"Ошибка завершения MAX task: {e}"
             )
-        await asyncio.sleep(SEND_INTERVAL)
-        message_queue.task_done()
+
+    logger.info("Приложение остановлено")
+
+
+# ============================================================
+# WEBHOOK ENDPOINT
+# ============================================================
 
 @app.post("/webhook/moyklass")
 async def moyklass_webhook(request: Request):
-    start_time = time.time()
-    request_id = str(uuid.uuid4())[:8]  # Короткий ID: "a1b2c3d4"
-    log_context = {"request_id": request_id}
-    
-    # Получаем данные вебхука
-    data = await request.json()
-    
-    # Логируем получение вебхука
-    logger.info(
-        f"ПОЛУЧЕН ВЕБХУК: {data.get('event')} | companyId: {data.get('companyId')}",
-        extra=log_context
-    )
-    
-    # Логируем полные данные вебхука (на уровне DEBUG, чтобы не засорять лог)
-    logger.debug(
-        f"Данные вебхука: {json.dumps(data, ensure_ascii=False)}",
-        extra=log_context
-    )
+    webhook_id = uuid.uuid4().hex[:8]
 
     try:
-        process_start = time.time()
-        message_obj = process_webhook(data)
-        process_duration = time.time() - process_start
-        
-        logger.debug(
-            f"process_webhook выполнен за {process_duration:.2f}с",
-            extra=log_context
-        )
+        payload = await request.json()
 
-        if message_obj:
-            text = message_obj.get("text")
-            phone = message_obj.get("phone")
-
-            if text and phone:
-                await message_queue.put((phone, text))
-                logger.info(
-                    f"сообщение добавлено в очередь для {phone} | обработка: {process_duration:.2f}с",
-                    extra=log_context
-                )
-            else:
-                logger.warning(
-                    f"ОШИБКА: отсутствует text или phone в обработанных данных | message_obj: {message_obj}",
-                    extra=log_context
-                )
-                return {"status": "ok"}
-
-        # Если всё отработало
-        total_duration = time.time() - start_time
         logger.info(
-            f"вебхук успешно обработан | всего: {total_duration:.2f}с",
-            extra=log_context
+            f"[{webhook_id}] - ПОЛУЧЕН ВЕБХУК: "
+            f"{payload.get('event')}"
         )
+
+        await webhook_queue.put(
+            (webhook_id, payload)
+        )
+
+        return {
+            "status": "ok"
+        }
 
     except Exception as e:
-        error_duration = time.time() - start_time
-        logger.error(
-            f"ОШИБКА при обработке вебхука через {error_duration:.2f}с: {str(e)}",
-            extra=log_context,
-            exc_info=True  # Добавляет stack trace
+        logger.exception(
+            f"[{webhook_id}] - Ошибка приема webhook: {e}"
         )
 
-    return {"status": "ok"}
+        return {
+            "status": "error",
+            "message": str(e)
+        }
+
+
+# ============================================================
+# HEALTHCHECK
+# ============================================================
+
+@app.get("/health")
+async def health():
+    return {
+        "status": "ok",
+        "telegram_connected": client.is_connected(),
+        "max_connected": max_client._app.started,
+        "webhook_queue": webhook_queue.qsize(),
+        "message_queue": message_queue.qsize(),
+    }
+
+
+# ============================================================
+# MAIN
+# ============================================================
+
+if __name__ == "__main__":
+    import uvicorn
+
+    uvicorn.run(
+        app,
+        host="0.0.0.0",
+        port=int(os.getenv("PORT", "8000")),
+    )

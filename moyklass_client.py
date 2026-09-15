@@ -5,6 +5,11 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
+BASE_URL = os.getenv("MOYKLASS_BASE_URL")
+API_KEY = os.getenv("MOYKLASS_API_KEY")
+
+_token_cache = None
+_token_expiry = datetime(2025, 12, 26, 0, 0, 0, tzinfo=timezone.utc)
 _token_expiry = datetime(2025, 12, 26, 0, 0, 0, tzinfo=timezone.utc)
 
 
