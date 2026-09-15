@@ -9,3 +9,6 @@ test1.py
 tg_entity_cache.json
 monitor.py
 webhook.log
+max_entity_cache.json
+max_qr.png
+max_cache
