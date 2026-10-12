@@ -61,6 +61,11 @@ message_queue = asyncio.Queue()
 SEND_INTERVAL = 3
 MAX_MONITOR_INTERVAL = 10
 MAX_SEND_TIMEOUT = 20
+MAX_START_ATTEMPTS = 3
+MAX_START_RETRY_DELAY = 5
+MAX_ENABLED = os.getenv("ENABLE_MAX", "true").strip().lower() in {
+    "1", "true", "yes", "on"
+}
 
 
 # ============================================================
@@ -80,6 +85,8 @@ async def start_max_client():
         if max_task.done():
             try:
                 await max_task
+            except asyncio.CancelledError:
+                raise
             except Exception as e:
                 logger.error(f"Ошибка запуска MAX: {e}")
             return None
@@ -91,7 +98,37 @@ async def start_max_client():
     if not max_task.done():
         max_task.cancel()
 
+        try:
+            await max_task
+        except asyncio.CancelledError:
+            pass
+        except Exception as e:
+            logger.warning(f"Ошибка завершения неудачного MAX task: {e}")
+
     return None
+
+
+async def start_max_with_retries():
+    for attempt in range(1, MAX_START_ATTEMPTS + 1):
+        logger.info(
+            f"Попытка запуска MAX {attempt}/{MAX_START_ATTEMPTS}"
+        )
+        max_task = await start_max_client()
+
+        if max_task is not None:
+            return max_task
+
+        if attempt < MAX_START_ATTEMPTS:
+            logger.warning(
+                f"MAX не запустился. Повтор через "
+                f"{MAX_START_RETRY_DELAY} секунд"
+            )
+            await asyncio.sleep(MAX_START_RETRY_DELAY)
+
+    raise RuntimeError(
+        f"Не удалось запустить MAX за {MAX_START_ATTEMPTS} попытки. "
+        "Запуск сервиса отменён."
+    )
 
 
 async def restart_max_client():
@@ -118,18 +155,31 @@ async def restart_max_client():
 
     await asyncio.sleep(2)
 
-    while True:
-        logger.info("Попытка повторного подключения MAX...")
+    for attempt in range(1, MAX_START_ATTEMPTS + 1):
+        logger.info(
+            f"Попытка повторного подключения MAX "
+            f"{attempt}/{MAX_START_ATTEMPTS}..."
+        )
 
         new_task = await start_max_client()
 
         if new_task is not None:
             app.state.max_task = new_task
             logger.info("MAX успешно переподключен")
-            return
+            return True
 
-        logger.error("Не удалось подключить MAX. Повтор через 5 секунд")
-        await asyncio.sleep(5)
+        if attempt < MAX_START_ATTEMPTS:
+            logger.error(
+                f"Не удалось подключить MAX. Повтор через "
+                f"{MAX_START_RETRY_DELAY} секунд"
+            )
+            await asyncio.sleep(MAX_START_RETRY_DELAY)
+
+    logger.error(
+        f"MAX не подключился после {MAX_START_ATTEMPTS} попыток. "
+        "Автоматические попытки остановлены."
+    )
+    return False
 
 
 async def max_monitor():
@@ -142,7 +192,13 @@ async def max_monitor():
             if not max_client._app.started:
                 logger.warning("MAX отключен. Запускаем восстановление соединения")
 
-                await restart_max_client()
+                reconnected = await restart_max_client()
+                if not reconnected:
+                    logger.error(
+                        "Монитор MAX остановлен после исчерпания попыток. "
+                        "Приложение продолжит работу с Telegram."
+                    )
+                    return
 
         except asyncio.CancelledError:
             logger.info("Монитор MAX остановлен")
@@ -369,11 +425,17 @@ async def startup_event():
     # MAX
     # --------------------------------------------------------
 
-    app.state.max_task = await start_max_client()
+    app.state.max_task = None
+    app.state.max_monitor = None
 
-    app.state.max_monitor = asyncio.create_task(
-        max_monitor()
-    )
+    if MAX_ENABLED:
+        app.state.max_task = await start_max_with_retries()
+        app.state.max_monitor = asyncio.create_task(max_monitor())
+    else:
+        logger.info(
+            "Запуск MAX отключен настройкой ENABLE_MAX; "
+            "приложение работает без MAX"
+        )
 
     # --------------------------------------------------------
     # WORKERS

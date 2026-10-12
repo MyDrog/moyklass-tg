@@ -29,7 +29,7 @@ def install_requirements():
     )
     run([pip_path, "install", "-r", REQUIREMENTS_FILE])
 
-def run_uvicorn_in_screen():
+def run_uvicorn_in_screen(enable_max=True, screen_name=SCREEN_NAME):
     if platform.system() == "Windows":
         print("Screen не поддерживается на Windows.")
         return
@@ -39,7 +39,9 @@ def run_uvicorn_in_screen():
     uvicorn_cmd = (
         f"cd {PROJECT_DIR} && "
         f"{python_exec} -c "
-        f"\"from dotenv import load_dotenv; "
+        f"\"import os; "
+        f"os.environ['ENABLE_MAX'] = '{str(enable_max).lower()}'; "
+        f"from dotenv import load_dotenv; "
         f"load_dotenv(r'{ENV_FILE}'); "
         f"import uvicorn; "
         f"uvicorn.run('app:app', host='0.0.0.0', port=8000)\""
@@ -49,13 +51,13 @@ def run_uvicorn_in_screen():
     cmd = [
         "screen",
         "-dmS",
-        SCREEN_NAME,
+        screen_name,
         "bash",
         "-c",
         uvicorn_cmd
     ]
 
-    print(f"Запуск uvicorn в screen-сессии '{SCREEN_NAME}'...")
+    print(f"Запуск uvicorn в screen-сессии '{screen_name}'...")
     run(cmd)
 
 def main():
