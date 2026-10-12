@@ -60,6 +60,7 @@ message_queue = asyncio.Queue()
 
 SEND_INTERVAL = 3
 MAX_MONITOR_INTERVAL = 10
+MAX_SEND_TIMEOUT = 20
 
 
 # ============================================================
@@ -177,26 +178,33 @@ async def message_sender_worker():
             # MAX
             # =========================
             try:
-                if not max_client._app.started:
-                    logger.warning(
-                        f"MAX не запущен перед отправкой для {phone}. "
-                        f"Перезапускаем"
+                if max_client._app.started:
+                    max_result = await asyncio.wait_for(
+                        send_max_message(phone, text),
+                        timeout=MAX_SEND_TIMEOUT,
                     )
-                    await restart_max_client()
 
-                max_result = await send_max_message(phone, text)
-
-                if max_result:
-                    logger.info(
-                        f"MAX: сообщение отправлено для {phone}, "
-                        f"попытка {current_attempt}/3"
-                    )
+                    if max_result:
+                        logger.info(
+                            f"MAX: сообщение отправлено для {phone}, "
+                            f"попытка {current_attempt}/3"
+                        )
+                    else:
+                        logger.warning(
+                            f"MAX: сообщение не отправлено для {phone}, "
+                            f"попытка {current_attempt}/3"
+                        )
                 else:
                     logger.warning(
-                        f"MAX: сообщение не отправлено для {phone}, "
-                        f"попытка {current_attempt}/3"
+                        f"MAX отключен перед отправкой для {phone}; "
+                        f"пропускаем MAX и продолжаем отправку в Telegram"
                     )
 
+            except asyncio.TimeoutError:
+                logger.warning(
+                    f"MAX: превышено время ожидания {MAX_SEND_TIMEOUT}с "
+                    f"для {phone}; продолжаем отправку в Telegram"
+                )
             except Exception as e:
                 logger.error(
                     f"MAX: ошибка отправки для {phone}, "
@@ -206,11 +214,10 @@ async def message_sender_worker():
             # =========================
             # Telegram
             # =========================
+            tg_result_raw = None
             try:
                 tg_result_raw = await send_message_by_phone(phone, text)
-
-                # Telegram возвращает None при успехе
-                tg_result = tg_result_raw is None or tg_result_raw is True
+                tg_result = tg_result_raw is True
 
                 if tg_result:
                     logger.info(

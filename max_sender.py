@@ -1,4 +1,5 @@
 import asyncio
+import json
 from pathlib import Path
 
 import qrcode
@@ -18,6 +19,7 @@ BASE_DIR = Path(__file__).resolve().parent
 WORK_DIR = BASE_DIR / "max_cache"
 SESSION_NAME = "max_web_session.db"
 QR_FILE = BASE_DIR / "max_qr.png"
+CACHE_FILE = BASE_DIR / "max_entity_cache.json"
 
 WORK_DIR.mkdir(parents=True, exist_ok=True)
 
@@ -66,6 +68,29 @@ def max_phone(phone: str) -> str:
     return "+" + phone
 
 
+def load_entity_cache() -> dict:
+    try:
+        with CACHE_FILE.open("r", encoding="utf-8") as file:
+            cache = json.load(file)
+        return cache if isinstance(cache, dict) else {}
+    except (OSError, json.JSONDecodeError):
+        return {}
+
+
+def save_entity_cache(cache: dict):
+    try:
+        with CACHE_FILE.open("w", encoding="utf-8") as file:
+            json.dump(cache, file, ensure_ascii=False, indent=2)
+    except OSError as e:
+        print(f"   Не удалось сохранить кеш MAX: {e}")
+
+
+def remove_entity_from_cache(phone: str):
+    cache = load_entity_cache()
+    if cache.pop(phone, None) is not None:
+        save_entity_cache(cache)
+
+
 # ============================================================
 # SEND MESSAGE
 # ============================================================
@@ -73,8 +98,43 @@ def max_phone(phone: str) -> str:
 async def send_max_message(phone: str, message: str) -> bool:
 
     phone = max_phone(phone)
+    phone_key = phone.lstrip("+")
 
     print(f"2. Ищем пользователя MAX: {phone}")
+
+    # Сначала используем сохранённый chat_id, чтобы не искать номер через API.
+    cached_entity = load_entity_cache().get(phone_key)
+    cached_chat_id = (
+        cached_entity.get("chat_id")
+        if isinstance(cached_entity, dict)
+        else None
+    )
+
+    if cached_chat_id is not None:
+        try:
+            chat = await max_client.get_chat(cached_chat_id)
+            print(
+                f"   Чат из кеша найден: "
+                f"id={getattr(chat, 'id', cached_chat_id)}"
+            )
+        except Exception as e:
+            print(f"   Сохранённый chat_id MAX недействителен: {e}")
+            remove_entity_from_cache(phone_key)
+        else:
+            try:
+                result = await max_client.send_message(
+                    chat_id=cached_chat_id,
+                    text=message,
+                )
+                print(
+                    "   Сообщение отправлено через кеш: "
+                    f"message_id={getattr(result, 'id', None)}"
+                )
+                return True
+            except Exception as e:
+                print(f"   Ошибка отправки в чат из кеша: {e}")
+                remove_entity_from_cache(phone_key)
+                return False
 
     try:
         user = await max_client.search_by_phone(phone)
@@ -128,6 +188,13 @@ async def send_max_message(phone: str, message: str) -> bool:
     except Exception as e:
         print(f"   Ошибка получения чата: {e}")
         return False
+
+    cache = load_entity_cache()
+    cache[phone_key] = {
+        "user_id": user.id,
+        "chat_id": chat_id,
+    }
+    save_entity_cache(cache)
 
     # --------------------------------------------------------
     # SEND

@@ -3,7 +3,7 @@ import os
 import json
 import asyncio
 from telethon import TelegramClient
-from telethon.errors import PeerIdInvalidError, RPCError
+from telethon.errors import PeerIdInvalidError, RPCError, UserIdInvalidError
 from telethon.tl.functions.contacts import ImportContactsRequest
 from telethon.tl.types import InputPhoneContact, InputPeerUser
 from dotenv import load_dotenv
@@ -101,11 +101,11 @@ async def import_contact(phone: str):
 
 # ---------- sending ----------
 
-async def safe_send(entity, phone: str, message: str) -> bool:
+async def safe_send(entity, phone: str, message: str) -> bool | None:
     """
-    Безопасная отправка.
-    True  — сообщение отправлено
-    False — entity невалиден
+    True  — сообщение отправлено.
+    False — временная/иная RPC-ошибка; кеш оставляем.
+    None  — Telegram отклонил получателя; кеш удалён, можно обновить entity.
     """
     if entity is None:
         return False
@@ -114,29 +114,33 @@ async def safe_send(entity, phone: str, message: str) -> bool:
         await client.send_message(entity, message)
         return True
 
-    except PeerIdInvalidError:
+    except (PeerIdInvalidError, UserIdInvalidError):
         remove_from_cache(phone)
-        return False
+        return None
 
     except RPCError:
         return False
 
-async def send_message_by_phone(phone: str, message: str):
+async def send_message_by_phone(phone: str, message: str) -> bool:
     await client.start(phone=PHONE_NUMBER)
 
     # 1. cache
     entity = await get_entity_from_cache(phone)
-    if await safe_send(entity, phone, message):
-        return
+    if entity is not None:
+        result = await safe_send(entity, phone, message)
+        if result is not None:
+            return result
 
     # 2. dialogs
     entity = await get_entity_from_dialogs(phone)
-    if await safe_send(entity, phone, message):
-        return
+    if entity is not None:
+        result = await safe_send(entity, phone, message)
+        if result is not None:
+            return result
 
     # 3. import (последний шанс)
     entity = await import_contact(phone)
-    await safe_send(entity, phone, message)
+    return await safe_send(entity, phone, message) is True
 
 # ---------- test ----------
 
