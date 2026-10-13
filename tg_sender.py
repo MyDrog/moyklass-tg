@@ -57,7 +57,8 @@ async def get_entity_from_dialogs(phone: str):
     phone = normalize_phone(phone)
     async for dialog in client.iter_dialogs():
         entity = dialog.entity
-        if hasattr(entity, "phone") and normalize_phone(entity.phone) == phone:
+        entity_phone = getattr(entity, "phone", None)
+        if entity_phone and normalize_phone(entity_phone) == phone:
             cache = load_cache()
             cache[phone] = {
                 "user_id": entity.id,

@@ -1,0 +1,41 @@
+// Grafana Cloud Loki writer. Replace placeholders with the values shown by
+// Grafana Cloud > Connections > Collector setup. Keep real credentials out of Git.
+loki.write "grafana_cloud" {
+  endpoint {
+    // Include the complete Loki push URL, ending in /loki/api/v1/push.
+    url = "https://<YOUR_LOKI_HOST>/loki/api/v1/push"
+
+    basic_auth {
+      username = "<YOUR_LOKI_USER>"
+      password = "<YOUR_GRAFANA_CLOUD_TOKEN>"
+    }
+  }
+}
+
+local.file_match "moyklass" {
+  path_targets = [{
+    "__path__" = "/opt/moyklass-tg/webhook.log*",
+    "job"      = "moyklass-tg",
+  }]
+}
+
+loki.source.file "moyklass" {
+  targets    = local.file_match.moyklass.targets
+  forward_to = [loki.process.moyklass.receiver]
+}
+
+loki.process "moyklass" {
+  // Keep Python tracebacks together with the log record that starts them.
+  stage.multiline {
+    firstline     = "^\\d{4}-\\d{2}-\\d{2} \\d{2}:\\d{2}:\\d{2},\\d{3} - "
+    max_wait_time = "3s"
+  }
+
+  // The application logs recipient phones after the word "для".
+  stage.replace {
+    expression = "для ([+]?[0-9]{10,15})"
+    replace    = "[PHONE]"
+  }
+
+  forward_to = [loki.write.grafana_cloud.receiver]
+}

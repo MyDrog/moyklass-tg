@@ -12,3 +12,4 @@ webhook.log
 max_entity_cache.json
 max_qr.png
 max_cache
+/alloy/config.alloy

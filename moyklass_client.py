@@ -1,5 +1,8 @@
 import os
 import requests
+import time
+import threading
+from collections import deque
 from datetime import datetime, timezone, timedelta
 from dotenv import load_dotenv
 
@@ -7,6 +10,37 @@ load_dotenv()
 
 BASE_URL = os.getenv("MOYKLASS_BASE_URL")
 API_KEY = os.getenv("MOYKLASS_API_KEY")
+
+_REQUEST_LIMIT = 2
+_REQUEST_WINDOW_SECONDS = 1.0
+_REQUEST_WINDOW_MARGIN_SECONDS = 0.001
+_request_timestamps = deque()
+_request_limit_lock = threading.Lock()
+
+
+def _wait_for_request_slot():
+    """Ограничивает все запросы к Moyklass двумя за скользящую секунду."""
+    with _request_limit_lock:
+        while True:
+            now = time.monotonic()
+
+            while (
+                _request_timestamps
+                and now - _request_timestamps[0] > _REQUEST_WINDOW_SECONDS
+            ):
+                _request_timestamps.popleft()
+
+            if len(_request_timestamps) < _REQUEST_LIMIT:
+                _request_timestamps.append(now)
+                return
+
+            wait_seconds = (
+                _request_timestamps[0]
+                + _REQUEST_WINDOW_SECONDS
+                + _REQUEST_WINDOW_MARGIN_SECONDS
+                - now
+            )
+            time.sleep(max(wait_seconds, _REQUEST_WINDOW_MARGIN_SECONDS))
 
 _token_cache = None
 _token_expiry = datetime(2025, 12, 26, 0, 0, 0, tzinfo=timezone.utc)
@@ -16,6 +50,7 @@ _token_expiry = datetime(2025, 12, 26, 0, 0, 0, tzinfo=timezone.utc)
 def _get_new_token():
     global _token_cache, _token_expiry
     try:
+        _wait_for_request_slot()
         resp = requests.post(
             f"{BASE_URL}/company/auth/getToken",
             json={"apiKey": API_KEY},
@@ -46,10 +81,12 @@ def get(path: str):
             "Content-Type": "application/json",
             "x-access-token": token
         }
+        _wait_for_request_slot()
         r = requests.get(f"{BASE_URL}{path}", headers=headers, timeout=10)
         if r.status_code == 401:
             token = _get_new_token()
             headers["x-access-token"] = token
+            _wait_for_request_slot()
             r = requests.get(f"{BASE_URL}{path}", headers=headers, timeout=10)
         r.raise_for_status()
         return r.json()
