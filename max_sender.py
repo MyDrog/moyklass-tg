@@ -91,6 +91,26 @@ def remove_entity_from_cache(phone: str):
         save_entity_cache(cache)
 
 
+def find_dialog_in_client_cache(phone_key: str):
+    """Ищет личный диалог среди чатов и пользователей, уже известных клиенту."""
+    for chat in getattr(max_client, "chats", None) or []:
+        if not getattr(chat, "is_dialog", False):
+            continue
+
+        participants = getattr(chat, "participants", None) or {}
+        for participant_id in participants:
+            try:
+                user = max_client.get_cached_user(int(participant_id))
+            except (TypeError, ValueError):
+                continue
+
+            user_phone = getattr(user, "phone", None) if user is not None else None
+            if user_phone is not None and normalize_phone(str(user_phone)) == phone_key:
+                return chat, user
+
+    return None, None
+
+
 # ============================================================
 # SEND MESSAGE
 # ============================================================
@@ -135,6 +155,33 @@ async def send_max_message(phone: str, message: str) -> bool:
                 print(f"   Ошибка отправки в чат из кеша: {e}")
                 remove_entity_from_cache(phone_key)
                 return False
+
+    # Если chat_id ещё не сохранён, ищем номер среди участников локальных
+    # личных диалогов до сетевого поиска пользователя.
+    chat, user = find_dialog_in_client_cache(phone_key)
+    if chat is not None and user is not None:
+        print(f"   Диалог найден в кеше чатов: id={chat.id}")
+
+        cache = load_entity_cache()
+        cache[phone_key] = {
+            "user_id": user.id,
+            "chat_id": chat.id,
+        }
+        save_entity_cache(cache)
+
+        try:
+            result = await max_client.send_message(
+                chat_id=chat.id,
+                text=message,
+            )
+            print(
+                "   Сообщение отправлено через кеш чатов: "
+                f"message_id={getattr(result, 'id', None)}"
+            )
+            return True
+        except Exception as e:
+            print(f"   Ошибка отправки в чат из кеша чатов: {e}")
+            return False
 
     try:
         user = await max_client.search_by_phone(phone)
