@@ -238,7 +238,8 @@ async def main():
     # Ждём фактического запуска клиента
     # --------------------------------------------------------
 
-    for _ in range(100):
+    # Даем время отсканировать QR и завершить подтверждение входа.
+    for _ in range(1200):
 
         if max_client._app.started:
             break
@@ -252,7 +253,7 @@ async def main():
 
     if not max_client._app.started:
         raise RuntimeError(
-            "MAX client не удалось запустить за 10 секунд"
+            "MAX client не удалось запустить за 120 секунд"
         )
 
     print("MAX client успешно запущен.")

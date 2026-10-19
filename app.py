@@ -63,6 +63,7 @@ MAX_MONITOR_INTERVAL = 10
 MAX_SEND_TIMEOUT = 20
 MAX_START_ATTEMPTS = 3
 MAX_START_RETRY_DELAY = 5
+MAX_START_TIMEOUT = 120
 MAX_ENABLED = os.getenv("ENABLE_MAX", "true").strip().lower() in {
     "1", "true", "yes", "on"
 }
@@ -77,7 +78,7 @@ async def start_max_client():
 
     max_task = asyncio.create_task(max_client.start())
 
-    for _ in range(100):
+    for _ in range(MAX_START_TIMEOUT * 10):
         if max_client._app.started:
             logger.info("MAX подключен")
             return max_task
@@ -93,7 +94,7 @@ async def start_max_client():
 
         await asyncio.sleep(0.1)
 
-    logger.error("MAX не подключился за 10 секунд")
+    logger.error(f"MAX не подключился за {MAX_START_TIMEOUT} секунд")
 
     if not max_task.done():
         max_task.cancel()

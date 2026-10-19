@@ -33,7 +33,7 @@ loki.process "moyklass" {
 
   // The application logs recipient phones after the word "для".
   stage.replace {
-    expression = "для ([+]?[0-9]{10,15})"
+    expression = "для (\\+?7[0-9]{10})"
     replace    = "[PHONE]"
   }
 
